@@ -11,6 +11,7 @@ env:
 
 jobs:
   terraform:
+    name: Terraform Infrastructure
     runs-on: ubuntu-latest
 
     defaults:
@@ -34,14 +35,68 @@ jobs:
           aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
           aws-region: ${{ secrets.AWS_REGION }}
 
+      - name: Verify AWS identity
+        run: aws sts get-caller-identity
+
       - name: Terraform Init
         run: terraform init -upgrade
 
       - name: Terraform Validate
         run: terraform validate
 
+      - name: Import existing ECR frontend
+        run: |
+          if ! terraform state show aws_ecr_repository.frontend >/dev/null 2>&1; then
+            terraform import aws_ecr_repository.frontend frontend
+          else
+            echo "Frontend ECR already exists in Terraform state"
+          fi
+
+      - name: Import existing ECR backend
+        run: |
+          if ! terraform state show aws_ecr_repository.backend >/dev/null 2>&1; then
+            terraform import aws_ecr_repository.backend backend
+          else
+            echo "Backend ECR already exists in Terraform state"
+          fi
+
+      - name: Import existing EKS cluster IAM role
+        run: |
+          if ! terraform state show aws_iam_role.eks_cluster >/dev/null 2>&1; then
+            terraform import aws_iam_role.eks_cluster eks_cluster_role
+          else
+            echo "EKS cluster IAM role already exists in Terraform state"
+          fi
+
+      - name: Import existing node group IAM role
+        run: |
+          if ! terraform state show aws_iam_role.node_group >/dev/null 2>&1; then
+            terraform import aws_iam_role.node_group udacity-node-group
+          else
+            echo "Node group IAM role already exists in Terraform state"
+          fi
+
+      - name: Import existing CodeBuild IAM role
+        run: |
+          if ! terraform state show aws_iam_role.codebuild >/dev/null 2>&1; then
+            terraform import aws_iam_role.codebuild codebuild-role
+          else
+            echo "CodeBuild IAM role already exists in Terraform state"
+          fi
+
+      - name: Import existing GitHub Actions IAM user
+        run: |
+          if ! terraform state show aws_iam_user.github_action_user >/dev/null 2>&1; then
+            terraform import aws_iam_user.github_action_user github-action-user
+          else
+            echo "GitHub Actions IAM user already exists in Terraform state"
+          fi
+
       - name: Terraform Plan
         run: terraform plan
 
       - name: Terraform Apply
         run: terraform apply -auto-approve
+
+      - name: Terraform Outputs
+        run: terraform output
