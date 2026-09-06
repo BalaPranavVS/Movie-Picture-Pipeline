@@ -74,13 +74,7 @@ jobs:
             echo "Node group IAM role already exists in Terraform state"
           fi
 
-      - name: Import existing CodeBuild IAM role
-        run: |
-          if ! terraform state show aws_iam_role.codebuild >/dev/null 2>&1; then
-            terraform import aws_iam_role.codebuild codebuild-role
-          else
-            echo "CodeBuild IAM role already exists in Terraform state"
-          fi
+     
 
       - name: Import existing GitHub Actions IAM user
         run: |
