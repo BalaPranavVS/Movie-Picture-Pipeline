@@ -35,8 +35,6 @@ jobs:
           aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
           aws-region: ${{ secrets.AWS_REGION }}
 
-      - name: Verify AWS identity
-        run: aws sts get-caller-identity
 
       - name: Terraform Init
         run: terraform init -upgrade
