@@ -48,9 +48,7 @@ jobs:
       # --------------------------------------------------
       # Verify AWS credentials
       # --------------------------------------------------
-      - name: Verify AWS identity
-        run: |
-          aws sts get-caller-identity
+  
 
       # --------------------------------------------------
       # Terraform Init
