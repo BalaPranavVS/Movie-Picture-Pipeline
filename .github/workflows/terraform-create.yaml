@@ -83,6 +83,13 @@ jobs:
           else
             echo "GitHub Actions IAM user already exists in Terraform state"
           fi
+      - name: Import existing EKS cluster
+        run: |
+         if ! terraform state show aws_eks_cluster.main >/dev/null 2>&1; then
+          terraform import aws_eks_cluster.main cluster
+         else
+           echo "EKS cluster already exists in Terraform state"
+         fi
 
       - name: Terraform Plan
         run: terraform plan
