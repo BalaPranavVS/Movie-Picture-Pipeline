@@ -10,6 +10,10 @@ on:
 
   workflow_dispatch:
 
+permissions:
+  contents: read
+  actions: write
+
 env:
   AWS_REGION: ${{ secrets.AWS_REGION }}
   EKS_CLUSTER_NAME: ${{ secrets.EKS_CLUSTER_NAME }}
@@ -241,6 +245,27 @@ jobs:
             exit 1
           fi
 
+
+      - name: Update BACKEND_API_URL
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          BACKEND_URL="${{ steps.backend-url.outputs.url }}"
+
+          if [ -z "$BACKEND_URL" ]; then
+            echo "ERROR: Backend URL is empty."
+            exit 1
+          fi
+
+          echo "Updating GitHub repository variable BACKEND_API_URL..."
+
+          gh variable set BACKEND_API_URL \
+            --body "$BACKEND_URL" \
+            --repo "${{ github.repository }}"
+
+          echo "BACKEND_API_URL updated successfully."
+
+
       - name: Print backend URL
         run: |
           echo ""
@@ -250,5 +275,8 @@ jobs:
           echo ""
           echo "Backend URL:"
           echo "${{ steps.backend-url.outputs.url }}"
+          echo ""
+          echo "GitHub Repository Variable:"
+          echo "BACKEND_API_URL"
           echo ""
           echo "=========================================="
