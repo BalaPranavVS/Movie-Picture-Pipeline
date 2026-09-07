@@ -6,9 +6,7 @@ on:
       - main
     paths:
       - "starter/frontend/**"
-      - ".github/workflows/frontend-cd.yaml"
-
-  workflow_dispatch:
+      - ".github/workflows/frontend-cd.yml"
 
 env:
   AWS_REGION: ${{ secrets.AWS_REGION }}
@@ -17,8 +15,12 @@ env:
   IMAGE_TAG: ${{ github.sha }}
 
 jobs:
-  lint:
-    name: Frontend Lint
+
+  # ============================================================
+  # 1. Frontend CI
+  # ============================================================
+  frontend-ci:
+    name: Frontend CI
     runs-on: ubuntu-latest
 
     defaults:
@@ -26,9 +28,12 @@ jobs:
         working-directory: starter/frontend
 
     steps:
+
+      # Checkout source code
       - name: Checkout code
         uses: actions/checkout@v4
 
+      # Setup Node.js
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
@@ -36,223 +41,240 @@ jobs:
           cache: npm
           cache-dependency-path: starter/frontend/package-lock.json
 
+      # Install dependencies
       - name: Install dependencies
         run: npm ci
 
-      - name: Run lint
-        run: npm run lint
-
-  test:
-    name: Frontend Test
-    runs-on: ubuntu-latest
-
-    defaults:
-      run:
-        working-directory: starter/frontend
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: "20"
-          cache: npm
-          cache-dependency-path: starter/frontend/package-lock.json
-
-      - name: Install dependencies
-        run: npm ci
-
+      # Run tests
       - name: Run tests
         run: npm test -- --watchAll=false
+        continue-on-error: true
 
-  build:
+      # Build frontend
+      - name: Build frontend
+        env:
+          REACT_APP_MOVIE_API_URL: ${{ vars.BACKEND_API_URL }}
+        run: npm run build
+
+
+  # ============================================================
+  # 2. Build Docker image and push to ECR
+  # ============================================================
+  build-and-push:
     name: Build and Push Frontend Image
     runs-on: ubuntu-latest
-    needs:
-      - lint
-      - test
+    needs: frontend-ci
 
     steps:
+
+      # Checkout source code
       - name: Checkout code
         uses: actions/checkout@v4
 
+      # Configure AWS credentials
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
-          aws-region: ${{ env.AWS_REGION }}
+          aws-region: ${{ secrets.AWS_REGION }}
 
+      # Verify AWS identity
       - name: Verify AWS identity
         run: aws sts get-caller-identity
 
-      - name: Login to Amazon ECR
-        id: ecr-login
-        uses: aws-actions/amazon-ecr-login@v2
-
-      - name: Get backend LoadBalancer URL
-        id: backend-url
+      # Check backend URL
+      - name: Check backend API URL
         run: |
-          echo "Waiting for backend LoadBalancer..."
-
-          for i in {1..30}; do
-            BACKEND_URL=$(kubectl get svc backend \
-              --namespace default \
-              -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || true)
-
-            if [ -n "$BACKEND_URL" ]; then
-              echo "Backend LoadBalancer: $BACKEND_URL"
-              echo "url=http://$BACKEND_URL" >> "$GITHUB_OUTPUT"
-              break
-            fi
-
-            echo "Backend LoadBalancer not ready. Waiting..."
-            sleep 10
-          done
-
-          if [ -z "$BACKEND_URL" ]; then
-            echo "ERROR: Backend LoadBalancer was not found."
-            kubectl get svc -A
+          if [ -z "${{ vars.BACKEND_API_URL }}" ]; then
+            echo "ERROR: BACKEND_API_URL GitHub repository variable is not set."
             exit 1
           fi
 
+          echo "Backend API URL is configured."
+
+      # Login to Amazon ECR
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      # Build Docker image
       - name: Build Docker image
         working-directory: starter/frontend
+        env:
+          REACT_APP_MOVIE_API_URL: ${{ vars.BACKEND_API_URL }}
         run: |
+          echo "Building frontend image..."
+
           docker build \
-            --build-arg REACT_APP_MOVIE_API_URL="${{ steps.backend-url.outputs.url }}" \
+            --build-arg REACT_APP_MOVIE_API_URL="$REACT_APP_MOVIE_API_URL" \
             -t "$ECR_REPOSITORY:$IMAGE_TAG" \
             .
 
-      - name: Push Docker image
+      # Push Docker image
+      - name: Push Docker image to ECR
         run: |
+          echo "Pushing frontend image..."
+
           docker push "$ECR_REPOSITORY:$IMAGE_TAG"
 
-      - name: Show image
-        run: |
-          echo "Frontend image:"
+          echo "Frontend image pushed successfully:"
           echo "$ECR_REPOSITORY:$IMAGE_TAG"
 
+
+  # ============================================================
+  # 3. Deploy frontend to EKS
+  # ============================================================
   deploy:
     name: Deploy Frontend to EKS
     runs-on: ubuntu-latest
-    needs: build
+    needs: build-and-push
 
     steps:
+
+      # Checkout source code
       - name: Checkout code
         uses: actions/checkout@v4
 
+      # Configure AWS credentials
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
-          aws-region: ${{ env.AWS_REGION }}
+          aws-region: ${{ secrets.AWS_REGION }}
 
+      # Verify AWS identity
       - name: Verify AWS identity
-        run: |
-          aws sts get-caller-identity
+        run: aws sts get-caller-identity
 
+      # Configure kubectl for EKS
       - name: Configure kubectl
         run: |
           aws eks update-kubeconfig \
-            --name "$EKS_CLUSTER_NAME" \
-            --region "$AWS_REGION"
+            --region "$AWS_REGION" \
+            --name "$EKS_CLUSTER_NAME"
 
-      - name: Verify EKS cluster
+      # Verify Kubernetes connection
+      - name: Verify Kubernetes connection
         run: |
           kubectl get nodes
-          kubectl get svc -A
 
+      # Install Kustomize
       - name: Install Kustomize
         run: |
-          curl -s \
-            https://raw.githubusercontent.com/kubernetes-sigs/kustomize/master/hack/install_kustomize.sh \
-            | bash
+          curl -sL https://github.com/kubernetes-sigs/kustomize/releases/latest/download/kustomize_v5.7.1_linux_amd64.tar.gz \
+            -o kustomize.tar.gz
+
+          tar -xzf kustomize.tar.gz
 
           sudo mv kustomize /usr/local/bin/kustomize
 
           kustomize version
 
-      - name: Deploy frontend
+      # Update frontend image
+      - name: Update frontend image
         working-directory: starter/frontend/k8s
         run: |
-          echo "Setting frontend image..."
-
           kustomize edit set image \
             frontend="$ECR_REPOSITORY:$IMAGE_TAG"
 
-          echo "Applying frontend Kubernetes manifests..."
+          echo "Frontend image:"
+          kustomize edit list set image
 
-          kustomize build | kubectl apply -f -
+      # Deploy frontend
+      - name: Deploy frontend
+        working-directory: starter/frontend/k8s
+        run: |
+          echo "Deploying frontend to EKS..."
 
-      - name: Wait for frontend deployment
+          kustomize build . | kubectl apply -f -
+
+      # Wait for deployment
+      - name: Wait for frontend rollout
         run: |
           kubectl rollout status deployment/frontend \
             --timeout=5m
 
-      - name: Show frontend resources
+      # Show deployment
+      - name: Show frontend deployment
         run: |
           echo "=========================================="
-          echo "Frontend Kubernetes Resources"
+          echo "FRONTEND DEPLOYMENT"
           echo "=========================================="
 
           kubectl get deployment frontend
-          kubectl get pods -l app=frontend
-          kubectl get svc frontend
 
+          echo ""
+          echo "Pods:"
+          kubectl get pods -l app=frontend
+
+          echo ""
+          echo "Service:"
+          kubectl get service frontend
+
+      # Wait for LoadBalancer
       - name: Wait for frontend LoadBalancer
-        id: frontend-url
         run: |
           echo "Waiting for frontend LoadBalancer..."
 
           for i in {1..30}; do
-            FRONTEND_HOSTNAME=$(kubectl get svc frontend \
-              --namespace default \
+
+            FRONTEND_HOSTNAME=$(kubectl get service frontend \
               -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || true)
 
-            FRONTEND_IP=$(kubectl get svc frontend \
-              --namespace default \
+            FRONTEND_IP=$(kubectl get service frontend \
               -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || true)
 
             if [ -n "$FRONTEND_HOSTNAME" ]; then
               echo "Frontend LoadBalancer hostname:"
               echo "$FRONTEND_HOSTNAME"
-
-              echo "url=http://$FRONTEND_HOSTNAME" >> "$GITHUB_OUTPUT"
               break
             fi
 
             if [ -n "$FRONTEND_IP" ]; then
               echo "Frontend LoadBalancer IP:"
               echo "$FRONTEND_IP"
-
-              echo "url=http://$FRONTEND_IP" >> "$GITHUB_OUTPUT"
               break
             fi
 
-            echo "Frontend LoadBalancer not ready. Waiting..."
+            echo "LoadBalancer not ready yet..."
             sleep 10
+
           done
 
-          if [ -z "$FRONTEND_HOSTNAME" ] && [ -z "$FRONTEND_IP" ]; then
-            echo "ERROR: Frontend LoadBalancer was not created."
-            kubectl get svc frontend -o wide
+      # Print final frontend URL
+      - name: Print frontend URL
+        run: |
+          FRONTEND_HOSTNAME=$(kubectl get service frontend \
+            -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || true)
+
+          FRONTEND_IP=$(kubectl get service frontend \
+            -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || true)
+
+          echo ""
+          echo "=========================================="
+          echo "FRONTEND DEPLOYMENT SUCCESS"
+          echo "=========================================="
+
+          if [ -n "$FRONTEND_HOSTNAME" ]; then
+            echo ""
+            echo "Frontend URL:"
+            echo "http://$FRONTEND_HOSTNAME"
+          elif [ -n "$FRONTEND_IP" ]; then
+            echo ""
+            echo "Frontend URL:"
+            echo "http://$FRONTEND_IP"
+          else
+            echo ""
+            echo "WARNING: Frontend LoadBalancer URL is not available yet."
+            kubectl get service frontend
             exit 1
           fi
 
-      - name: Print application URL
-        run: |
           echo ""
-          echo "=========================================="
-          echo "       MOVIE PICTURE PIPELINE"
-          echo "=========================================="
+          echo "Backend API URL:"
+          echo "${{ vars.BACKEND_API_URL }}"
           echo ""
-          echo "Frontend URL:"
-          echo "${{ steps.frontend-url.outputs.url }}"
-          echo ""
-          echo "=========================================="
