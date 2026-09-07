@@ -1,4 +1,3 @@
-
 name: Terraform Infrastructure
 
 on:
@@ -48,7 +47,7 @@ jobs:
       # --------------------------------------------------
       # Verify AWS credentials
       # --------------------------------------------------
-  
+
 
       # --------------------------------------------------
       # Terraform Init
@@ -227,6 +226,108 @@ jobs:
           fi
 
       # --------------------------------------------------
+      # Import existing networking (subnets, IGW, route tables)
+      # --------------------------------------------------
+      - name: Import existing networking
+        run: |
+          VPC_ID=$(aws ec2 describe-vpcs \
+            --filters "Name=tag:Name,Values=udacity" \
+            --query "Vpcs[0].VpcId" \
+            --output text \
+            --region "$AWS_REGION")
+
+          if [ "$VPC_ID" == "None" ] || [ -z "$VPC_ID" ]; then
+            echo "No VPC found, skipping networking import"
+            exit 0
+          fi
+
+          # --- Public subnet (10.0.1.0/24) ---
+          PUBLIC_SUBNET_ID=$(aws ec2 describe-subnets \
+            --filters "Name=vpc-id,Values=$VPC_ID" "Name=cidr-block,Values=10.0.1.0/24" \
+            --query "Subnets[0].SubnetId" --output text --region "$AWS_REGION")
+          if [ "$PUBLIC_SUBNET_ID" != "None" ] && [ -n "$PUBLIC_SUBNET_ID" ]; then
+            if ! terraform state show aws_subnet.public_subnet >/dev/null 2>&1; then
+              terraform import aws_subnet.public_subnet "$PUBLIC_SUBNET_ID"
+            else
+              echo "public_subnet already in Terraform state"
+            fi
+          else
+            echo "No public subnet found for 10.0.1.0/24"
+          fi
+
+          # --- Private subnet (10.0.2.0/24) ---
+          PRIVATE_SUBNET_ID=$(aws ec2 describe-subnets \
+            --filters "Name=vpc-id,Values=$VPC_ID" "Name=cidr-block,Values=10.0.2.0/24" \
+            --query "Subnets[0].SubnetId" --output text --region "$AWS_REGION")
+          if [ "$PRIVATE_SUBNET_ID" != "None" ] && [ -n "$PRIVATE_SUBNET_ID" ]; then
+            if ! terraform state show aws_subnet.private_subnet >/dev/null 2>&1; then
+              terraform import aws_subnet.private_subnet "$PRIVATE_SUBNET_ID"
+            else
+              echo "private_subnet already in Terraform state"
+            fi
+          else
+            echo "No private subnet found for 10.0.2.0/24"
+          fi
+
+          # --- Internet gateway ---
+          IGW_ID=$(aws ec2 describe-internet-gateways \
+            --filters "Name=attachment.vpc-id,Values=$VPC_ID" \
+            --query "InternetGateways[0].InternetGatewayId" --output text --region "$AWS_REGION")
+          if [ "$IGW_ID" != "None" ] && [ -n "$IGW_ID" ]; then
+            if ! terraform state show aws_internet_gateway.igw >/dev/null 2>&1; then
+              terraform import aws_internet_gateway.igw "$IGW_ID"
+            else
+              echo "igw already in Terraform state"
+            fi
+          else
+            echo "No internet gateway found for this VPC"
+          fi
+
+          # --- Public route table + association ---
+          PUBLIC_RTB_ID=$(aws ec2 describe-route-tables \
+            --filters "Name=vpc-id,Values=$VPC_ID" "Name=tag:Name,Values=public" \
+            --query "RouteTables[0].RouteTableId" --output text --region "$AWS_REGION")
+          if [ "$PUBLIC_RTB_ID" != "None" ] && [ -n "$PUBLIC_RTB_ID" ]; then
+            if ! terraform state show aws_route_table.public >/dev/null 2>&1; then
+              terraform import aws_route_table.public "$PUBLIC_RTB_ID"
+            else
+              echo "public route table already in Terraform state"
+            fi
+
+            if [ -n "$PUBLIC_SUBNET_ID" ] && [ "$PUBLIC_SUBNET_ID" != "None" ]; then
+              if ! terraform state show aws_route_table_association.public >/dev/null 2>&1; then
+                terraform import aws_route_table_association.public "${PUBLIC_SUBNET_ID}/${PUBLIC_RTB_ID}"
+              else
+                echo "public route table association already in Terraform state"
+              fi
+            fi
+          else
+            echo "No public route table found"
+          fi
+
+          # --- Private route table + association ---
+          PRIVATE_RTB_ID=$(aws ec2 describe-route-tables \
+            --filters "Name=vpc-id,Values=$VPC_ID" "Name=tag:Name,Values=private" \
+            --query "RouteTables[0].RouteTableId" --output text --region "$AWS_REGION")
+          if [ "$PRIVATE_RTB_ID" != "None" ] && [ -n "$PRIVATE_RTB_ID" ]; then
+            if ! terraform state show aws_route_table.private >/dev/null 2>&1; then
+              terraform import aws_route_table.private "$PRIVATE_RTB_ID"
+            else
+              echo "private route table already in Terraform state"
+            fi
+
+            if [ -n "$PRIVATE_SUBNET_ID" ] && [ "$PRIVATE_SUBNET_ID" != "None" ]; then
+              if ! terraform state show aws_route_table_association.private >/dev/null 2>&1; then
+                terraform import aws_route_table_association.private "${PRIVATE_SUBNET_ID}/${PRIVATE_RTB_ID}"
+              else
+                echo "private route table association already in Terraform state"
+              fi
+            fi
+          else
+            echo "No private route table found"
+          fi
+
+      # --------------------------------------------------
       # Show Terraform state
       # --------------------------------------------------
       - name: Show Terraform state
@@ -246,4 +347,3 @@ jobs:
       - name: Terraform Apply
         run: |
           terraform apply -auto-approve
-
