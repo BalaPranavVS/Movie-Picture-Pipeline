@@ -28,6 +28,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+
       # ---------------------------------------------------------
       # 2. Install Terraform
       # ---------------------------------------------------------
@@ -35,6 +36,7 @@ jobs:
         uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: 1.3.9
+
 
       # ---------------------------------------------------------
       # 3. Configure AWS credentials
@@ -47,6 +49,7 @@ jobs:
           aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
           aws-region: ${{ env.AWS_REGION }}
 
+
       # ---------------------------------------------------------
       # 4. Verify AWS credentials
       # ---------------------------------------------------------
@@ -57,17 +60,20 @@ jobs:
 
           echo "AWS_REGION=$AWS_REGION"
 
+
       # ---------------------------------------------------------
       # 5. Terraform Init
       # ---------------------------------------------------------
       - name: Terraform Init
         run: terraform init -upgrade
 
+
       # ---------------------------------------------------------
       # 6. Terraform Validate
       # ---------------------------------------------------------
       - name: Terraform Validate
         run: terraform validate
+
 
       # ---------------------------------------------------------
       # 7. Import existing ECR repositories
@@ -107,6 +113,7 @@ jobs:
             echo "backend ECR repository does not exist"
           fi
 
+
       # ---------------------------------------------------------
       # 8. Import existing EKS cluster
       # ---------------------------------------------------------
@@ -127,6 +134,7 @@ jobs:
           else
             echo "EKS cluster does not exist"
           fi
+
 
       # ---------------------------------------------------------
       # 9. Import existing EKS node group
@@ -150,6 +158,7 @@ jobs:
             echo "EKS node group does not exist"
           fi
 
+
       # ---------------------------------------------------------
       # 10. Import existing EKS cluster IAM role
       # ---------------------------------------------------------
@@ -167,6 +176,7 @@ jobs:
           else
             echo "eks_cluster_role does not exist"
           fi
+
 
       # ---------------------------------------------------------
       # 11. Import existing node group IAM role
@@ -186,6 +196,7 @@ jobs:
             echo "udacity-node-group does not exist"
           fi
 
+
       # ---------------------------------------------------------
       # 12. Import existing GitHub Action IAM user
       # ---------------------------------------------------------
@@ -203,6 +214,7 @@ jobs:
           else
             echo "github-action-user does not exist"
           fi
+
 
       # ---------------------------------------------------------
       # 13. Import existing VPC
@@ -229,6 +241,7 @@ jobs:
             echo "No VPC with Name=udacity found"
           fi
 
+
       # ---------------------------------------------------------
       # 14. Import networking resources
       # ---------------------------------------------------------
@@ -251,6 +264,7 @@ jobs:
 
           echo "Using VPC: $VPC_ID"
 
+
           # =====================================================
           # PUBLIC SUBNET
           # =====================================================
@@ -263,7 +277,8 @@ jobs:
             --output text \
             --region "$AWS_REGION")
 
-          if [ "$PUBLIC_SUBNET_ID" != "None" ] && [ -n "$PUBLIC_SUBNET_ID" ]; then
+          if [ "$PUBLIC_SUBNET_ID" != "None" ] && \
+             [ -n "$PUBLIC_SUBNET_ID" ]; then
 
             echo "Public subnet: $PUBLIC_SUBNET_ID"
 
@@ -290,7 +305,8 @@ jobs:
             --output text \
             --region "$AWS_REGION")
 
-          if [ "$PRIVATE_SUBNET_ID" != "None" ] && [ -n "$PRIVATE_SUBNET_ID" ]; then
+          if [ "$PRIVATE_SUBNET_ID" != "None" ] && \
+             [ -n "$PRIVATE_SUBNET_ID" ]; then
 
             echo "Private subnet: $PRIVATE_SUBNET_ID"
 
@@ -352,6 +368,8 @@ jobs:
               echo "public route table already in Terraform state"
             fi
 
+          else
+            echo "No public route table found"
           fi
 
 
@@ -375,11 +393,15 @@ jobs:
                [ -n "$PUBLIC_ASSOC_ID" ]; then
 
               if ! terraform state show aws_route_table_association.public >/dev/null 2>&1; then
+
                 terraform import \
                   aws_route_table_association.public \
                   "$PUBLIC_ASSOC_ID"
+
               else
+
                 echo "public route table association already in Terraform state"
+
               fi
 
             else
@@ -401,7 +423,8 @@ jobs:
             --output text \
             --region "$AWS_REGION")
 
-          if [ "$PRIVATE_RTB_ID" != "None" ] && [ -n "$PRIVATE_RTB_ID" ]; then
+          if [ "$PRIVATE_RTB_ID" != "None" ] && \
+             [ -n "$PRIVATE_RTB_ID" ]; then
 
             echo "Private route table: $PRIVATE_RTB_ID"
 
@@ -411,14 +434,17 @@ jobs:
               echo "private route table already in Terraform state"
             fi
 
+          else
+            echo "No private route table found"
           fi
 
 
           # =====================================================
           # PRIVATE ROUTE TABLE ASSOCIATION
           #
-          # Find the association by PRIVATE SUBNET across ALL
-          # route tables.
+          # IMPORTANT:
+          # Find the existing association by PRIVATE SUBNET
+          # across ALL route tables.
           # =====================================================
 
           if [ "$PRIVATE_SUBNET_ID" != "None" ] && \
@@ -441,6 +467,11 @@ jobs:
             echo "Current route table: $CURRENT_PRIVATE_RTB_ID"
             echo "Terraform private route table: $PRIVATE_RTB_ID"
 
+
+            # ---------------------------------------------------
+            # Existing association found
+            # ---------------------------------------------------
+
             if [ "$PRIVATE_ASSOC_ID" != "None" ] && \
                [ -n "$PRIVATE_ASSOC_ID" ]; then
 
@@ -458,6 +489,11 @@ jobs:
 
               fi
 
+
+            # ---------------------------------------------------
+            # No existing association
+            # ---------------------------------------------------
+
             else
 
               echo "No existing private subnet association found."
@@ -465,6 +501,7 @@ jobs:
             fi
 
           fi
+
 
       # ---------------------------------------------------------
       # 15. Import existing EKS add-ons
@@ -476,6 +513,7 @@ jobs:
           set -e
 
           echo "Checking EKS add-ons..."
+
 
           # =====================================================
           # VPC CNI
@@ -566,6 +604,7 @@ jobs:
 
           fi
 
+
       # ---------------------------------------------------------
       # 16. Show Terraform state
       # ---------------------------------------------------------
@@ -575,11 +614,13 @@ jobs:
           terraform state list
           echo "====================================="
 
+
       # ---------------------------------------------------------
       # 17. Terraform Plan
       # ---------------------------------------------------------
       - name: Terraform Plan
         run: terraform plan
+
 
       # ---------------------------------------------------------
       # 18. Terraform Apply
