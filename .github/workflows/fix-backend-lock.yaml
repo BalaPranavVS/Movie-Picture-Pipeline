@@ -1,39 +1,188 @@
-name: Fix Backend Pipfile.lock
+```yaml
+name: Backend API Test
 
 on:
   workflow_dispatch:
 
+env:
+  AWS_REGION: ${{ secrets.AWS_REGION }}
+  EKS_CLUSTER_NAME: ${{ secrets.EKS_CLUSTER_NAME }}
+  BACKEND_API_URL: ${{ vars.BACKEND_API_URL }}
+
+permissions:
+  contents: read
+
 jobs:
-  relock:
+  test-backend:
+    name: Test Backend API
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    defaults:
-      run:
-        working-directory: starter/backend
+
     steps:
-      - name: Checkout code
+
+      # ==========================================================
+      # CHECKOUT
+      # ==========================================================
+
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.10"
 
-      - name: Install pipenv
-        run: pip install pipenv
+      # ==========================================================
+      # VERIFY BACKEND URL
+      # ==========================================================
 
-      - name: Regenerate Pipfile.lock
-        run: pipenv lock
-
-      - name: Commit and push updated lock file
+      - name: Verify BACKEND_API_URL
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add Pipfile.lock
-          if git diff --cached --quiet; then
-            echo "Pipfile.lock already up to date, nothing to commit."
-          else
-            git commit -m "chore: regenerate Pipfile.lock"
-            git push
+          echo "=========================================="
+          echo "        BACKEND API CONFIGURATION"
+          echo "=========================================="
+
+          if [ -z "$BACKEND_API_URL" ]; then
+            echo "ERROR: BACKEND_API_URL is not configured."
+            exit 1
           fi
+
+          echo "Backend API URL:"
+          echo "$BACKEND_API_URL"
+
+          echo ""
+          echo "Movies endpoint:"
+          echo "$BACKEND_API_URL/movies"
+
+
+      # ==========================================================
+      # TEST BACKEND API
+      # ==========================================================
+
+      - name: Test /movies endpoint
+        run: |
+          echo "=========================================="
+          echo "        TESTING BACKEND /movies"
+          echo "=========================================="
+
+          echo ""
+          echo "Sending request..."
+
+          HTTP_STATUS=$(curl \
+            --silent \
+            --show-error \
+            --output /tmp/movies-response.json \
+            --write-out "%{http_code}" \
+            --connect-timeout 10 \
+            --max-time 30 \
+            "$BACKEND_API_URL/movies")
+
+          echo ""
+          echo "HTTP Status:"
+          echo "$HTTP_STATUS"
+
+          echo ""
+          echo "Backend Response:"
+          cat /tmp/movies-response.json
+
+          echo ""
+
+          if [ "$HTTP_STATUS" -ne 200 ]; then
+            echo "=========================================="
+            echo "       BACKEND API TEST FAILED"
+            echo "=========================================="
+
+            exit 1
+          fi
+
+          echo "=========================================="
+          echo "       HTTP TEST PASSED"
+          echo "=========================================="
+
+
+      # ==========================================================
+      # VALIDATE JSON RESPONSE
+      # ==========================================================
+
+      - name: Validate /movies response
+        run: |
+          echo "=========================================="
+          echo "        VALIDATING JSON RESPONSE"
+          echo "=========================================="
+
+          python - <<'PY'
+          import json
+
+          with open("/tmp/movies-response.json") as f:
+              data = json.load(f)
+
+          print("JSON response is valid.")
+
+          if "movies" not in data:
+              raise Exception("ERROR: 'movies' field is missing.")
+
+          movies = data["movies"]
+
+          if not isinstance(movies, list):
+              raise Exception("ERROR: 'movies' is not a list.")
+
+          print(f"Number of movies returned: {len(movies)}")
+
+          expected_titles = {
+              "Top Gun: Maverick",
+              "Sonic the Hedgehog",
+              "A Quiet Place",
+          }
+
+          actual_titles = {
+              movie.get("title")
+              for movie in movies
+          }
+
+          print("")
+          print("Movies returned:")
+
+          for movie in movies:
+              print(
+                  f"ID: {movie.get('id')} | "
+                  f"Title: {movie.get('title')}"
+              )
+
+          if actual_titles != expected_titles:
+              print("")
+              print("Expected:")
+              print(expected_titles)
+
+              print("")
+              print("Received:")
+              print(actual_titles)
+
+              raise Exception(
+                  "ERROR: Backend returned unexpected movie data."
+              )
+
+          print("")
+          print("Movie data validation PASSED.")
+          PY
+
+
+      # ==========================================================
+      # FINAL RESULT
+      # ==========================================================
+
+      - name: Backend test summary
+        run: |
+          echo ""
+          echo "=========================================="
+          echo "       BACKEND TEST SUCCESS"
+          echo "=========================================="
+          echo ""
+          echo "Backend URL:"
+          echo "$BACKEND_API_URL"
+          echo ""
+          echo "Endpoint:"
+          echo "$BACKEND_API_URL/movies"
+          echo ""
+          echo "HTTP Status: 200"
+          echo "JSON Validation: PASSED"
+          echo "Movie Data: PASSED"
+          echo ""
+          echo "Backend is working correctly."
+          echo ""
+          echo "=========================================="
+```
