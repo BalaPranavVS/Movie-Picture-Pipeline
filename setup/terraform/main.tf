@@ -144,6 +144,7 @@ resource "aws_eks_cluster" "main" {
   name     = "cluster"
   version  = var.k8s_version
   role_arn = aws_iam_role.eks_cluster.arn
+  bootstrap_self_managed_addons  = false
   vpc_config {
     subnet_ids              = [aws_subnet.private_subnet.id, aws_subnet.public_subnet.id]
     endpoint_public_access  = var.enable_private == true ? false : true
