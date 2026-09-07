@@ -141,16 +141,51 @@ resource "aws_ecr_repository" "backend" {
 ################
 # Create an EKS cluster
 resource "aws_eks_cluster" "main" {
-  name     = "cluster"
-  version  = var.k8s_version
-  role_arn = aws_iam_role.eks_cluster.arn
-  bootstrap_self_managed_addons  = false
+  name                          = "cluster"
+  version                       = var.k8s_version
+  role_arn                      = aws_iam_role.eks_cluster.arn
+  bootstrap_self_managed_addons = false
   vpc_config {
     subnet_ids              = [aws_subnet.private_subnet.id, aws_subnet.public_subnet.id]
     endpoint_public_access  = var.enable_private == true ? false : true
     endpoint_private_access = true
   }
   depends_on = [aws_iam_role_policy_attachment.eks_cluster, aws_iam_role_policy_attachment.eks_service]
+}
+
+
+################
+# EKS Add-ons
+################
+# bootstrap_self_managed_addons = false means EKS does NOT auto-install
+# these on cluster creation, so we manage them explicitly here instead.
+
+resource "aws_eks_addon" "vpc_cni" {
+  cluster_name                = aws_eks_cluster.main.name
+  addon_name                  = "vpc-cni"
+  resolve_conflicts_on_create = "OVERWRITE"
+  resolve_conflicts_on_update = "OVERWRITE"
+
+  depends_on = [aws_eks_cluster.main]
+}
+
+resource "aws_eks_addon" "kube_proxy" {
+  cluster_name                = aws_eks_cluster.main.name
+  addon_name                  = "kube-proxy"
+  resolve_conflicts_on_create = "OVERWRITE"
+  resolve_conflicts_on_update = "OVERWRITE"
+
+  depends_on = [aws_eks_cluster.main]
+}
+
+resource "aws_eks_addon" "coredns" {
+  cluster_name                = aws_eks_cluster.main.name
+  addon_name                  = "coredns"
+  resolve_conflicts_on_create = "OVERWRITE"
+  resolve_conflicts_on_update = "OVERWRITE"
+
+  # CoreDNS pods need a running node to schedule onto
+  depends_on = [aws_eks_node_group.main, aws_eks_addon.vpc_cni]
 }
 
 
