@@ -1,4 +1,4 @@
-```yaml
+
 name: Backend API Test
 
 on:
@@ -185,4 +185,4 @@ jobs:
           echo "Backend is working correctly."
           echo ""
           echo "=========================================="
-```
+
