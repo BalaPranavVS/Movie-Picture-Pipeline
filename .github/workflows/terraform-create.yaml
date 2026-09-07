@@ -1,13 +1,15 @@
-name: Terraform Infrastructure
+name: Terraform Blue-Green Deployment
 
 on:
+  push:
+    branches:
+      - main
+
   workflow_dispatch:
 
-permissions:
-  contents: read
-
 env:
-  AWS_REGION: ${{ secrets.AWS_REGION }}
+  TF_ACTION_WORKING_DIR: setup/terraform
+  AWS_REGION: us-east-1
 
 jobs:
   terraform:
@@ -16,60 +18,60 @@ jobs:
 
     defaults:
       run:
-        working-directory: setup/terraform
+        working-directory: ${{ env.TF_ACTION_WORKING_DIR }}
 
     steps:
-      # --------------------------------------------------
-      # Checkout
-      # --------------------------------------------------
-      - name: Checkout code
+
+      # ---------------------------------------------------------
+      # 1. Checkout repository
+      # ---------------------------------------------------------
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      # --------------------------------------------------
-      # Terraform
-      # --------------------------------------------------
+      # ---------------------------------------------------------
+      # 2. Install Terraform
+      # ---------------------------------------------------------
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: 1.3.9
 
-      # --------------------------------------------------
-      # AWS Credentials
-      # --------------------------------------------------
+      # ---------------------------------------------------------
+      # 3. Configure AWS credentials
+      # ---------------------------------------------------------
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
-          aws-region: ${{ secrets.AWS_REGION }}
+          aws-region: ${{ env.AWS_REGION }}
 
-      # --------------------------------------------------
-      # Verify AWS credentials
-      # --------------------------------------------------
+      # ---------------------------------------------------------
+      # 4. Verify AWS credentials
+      # ---------------------------------------------------------
+      - name: Verify AWS credentials
+        run: |
+          echo "Checking AWS identity..."
+          aws sts get-caller-identity
 
+          echo "AWS_REGION=$AWS_REGION"
 
-      # --------------------------------------------------
-      # Terraform Init
-      # --------------------------------------------------
+      # ---------------------------------------------------------
+      # 5. Terraform Init
+      # ---------------------------------------------------------
       - name: Terraform Init
-        run: |
-          terraform init -upgrade
+        run: terraform init -upgrade
 
-      # --------------------------------------------------
-      # Terraform Validate
-      # --------------------------------------------------
+      # ---------------------------------------------------------
+      # 6. Terraform Validate
+      # ---------------------------------------------------------
       - name: Terraform Validate
-        run: |
-          terraform validate
+        run: terraform validate
 
-      # ==================================================
-      # IMPORT EXISTING RESOURCES
-      # ==================================================
-
-      # --------------------------------------------------
-      # Import ECR repositories
-      # --------------------------------------------------
+      # ---------------------------------------------------------
+      # 7. Import existing ECR repositories
+      # ---------------------------------------------------------
       - name: Import existing ECR repositories
         run: |
           echo "Checking frontend ECR repository..."
@@ -88,6 +90,7 @@ jobs:
             echo "frontend ECR repository does not exist"
           fi
 
+
           echo "Checking backend ECR repository..."
 
           if aws ecr describe-repositories \
@@ -104,9 +107,9 @@ jobs:
             echo "backend ECR repository does not exist"
           fi
 
-      # --------------------------------------------------
-      # Import EKS cluster
-      # --------------------------------------------------
+      # ---------------------------------------------------------
+      # 8. Import existing EKS cluster
+      # ---------------------------------------------------------
       - name: Import existing EKS cluster
         run: |
           echo "Checking EKS cluster..."
@@ -125,9 +128,9 @@ jobs:
             echo "EKS cluster does not exist"
           fi
 
-      # --------------------------------------------------
-      # Import EKS node group
-      # --------------------------------------------------
+      # ---------------------------------------------------------
+      # 9. Import existing EKS node group
+      # ---------------------------------------------------------
       - name: Import existing EKS node group
         run: |
           echo "Checking EKS node group..."
@@ -147,9 +150,9 @@ jobs:
             echo "EKS node group does not exist"
           fi
 
-      # --------------------------------------------------
-      # Import EKS cluster IAM role
-      # --------------------------------------------------
+      # ---------------------------------------------------------
+      # 10. Import existing EKS cluster IAM role
+      # ---------------------------------------------------------
       - name: Import EKS cluster IAM role
         run: |
           if aws iam get-role \
@@ -165,10 +168,10 @@ jobs:
             echo "eks_cluster_role does not exist"
           fi
 
-      # --------------------------------------------------
-      # Import EKS node group IAM role
-      # --------------------------------------------------
-      - name: Import EKS node group IAM role
+      # ---------------------------------------------------------
+      # 11. Import existing node group IAM role
+      # ---------------------------------------------------------
+      - name: Import node group IAM role
         run: |
           if aws iam get-role \
             --role-name udacity-node-group >/dev/null 2>&1; then
@@ -183,10 +186,10 @@ jobs:
             echo "udacity-node-group does not exist"
           fi
 
-      # --------------------------------------------------
-      # Import existing GitHub action IAM user
-      # --------------------------------------------------
-      - name: Import existing GitHub action IAM user
+      # ---------------------------------------------------------
+      # 12. Import existing GitHub Action IAM user
+      # ---------------------------------------------------------
+      - name: Import GitHub Action IAM user
         run: |
           if aws iam get-user \
             --user-name github-action-user >/dev/null 2>&1; then
@@ -201,10 +204,9 @@ jobs:
             echo "github-action-user does not exist"
           fi
 
-      # ==================================================
-      # VPC / NETWORK
-      # ==================================================
-
+      # ---------------------------------------------------------
+      # 13. Import existing VPC
+      # ---------------------------------------------------------
       - name: Import existing VPC
         run: |
           VPC_ID=$(aws ec2 describe-vpcs \
@@ -214,6 +216,7 @@ jobs:
             --region "$AWS_REGION")
 
           if [ "$VPC_ID" != "None" ] && [ -n "$VPC_ID" ]; then
+
             echo "Found VPC: $VPC_ID"
 
             if ! terraform state show aws_vpc.vpc >/dev/null 2>&1; then
@@ -221,15 +224,20 @@ jobs:
             else
               echo "VPC already in Terraform state"
             fi
+
           else
             echo "No VPC with Name=udacity found"
           fi
 
-      # --------------------------------------------------
-      # Import existing networking (subnets, IGW, route tables)
-      # --------------------------------------------------
-      - name: Import existing networking
+      # ---------------------------------------------------------
+      # 14. Import networking resources
+      # ---------------------------------------------------------
+      - name: Import networking resources
+        shell: bash
         run: |
+
+          set -e
+
           VPC_ID=$(aws ec2 describe-vpcs \
             --filters "Name=tag:Name,Values=udacity" \
             --query "Vpcs[0].VpcId" \
@@ -241,112 +249,340 @@ jobs:
             exit 0
           fi
 
-          # --- Public subnet (10.0.1.0/24) ---
+          echo "Using VPC: $VPC_ID"
+
+          # =====================================================
+          # PUBLIC SUBNET
+          # =====================================================
+
           PUBLIC_SUBNET_ID=$(aws ec2 describe-subnets \
-            --filters "Name=vpc-id,Values=$VPC_ID" "Name=cidr-block,Values=10.0.1.0/24" \
-            --query "Subnets[0].SubnetId" --output text --region "$AWS_REGION")
+            --filters \
+              "Name=vpc-id,Values=$VPC_ID" \
+              "Name=cidr-block,Values=10.0.1.0/24" \
+            --query "Subnets[0].SubnetId" \
+            --output text \
+            --region "$AWS_REGION")
+
           if [ "$PUBLIC_SUBNET_ID" != "None" ] && [ -n "$PUBLIC_SUBNET_ID" ]; then
+
+            echo "Public subnet: $PUBLIC_SUBNET_ID"
+
             if ! terraform state show aws_subnet.public_subnet >/dev/null 2>&1; then
               terraform import aws_subnet.public_subnet "$PUBLIC_SUBNET_ID"
             else
               echo "public_subnet already in Terraform state"
             fi
+
           else
-            echo "No public subnet found for 10.0.1.0/24"
+            echo "No public subnet found"
           fi
 
-          # --- Private subnet (10.0.2.0/24) ---
+
+          # =====================================================
+          # PRIVATE SUBNET
+          # =====================================================
+
           PRIVATE_SUBNET_ID=$(aws ec2 describe-subnets \
-            --filters "Name=vpc-id,Values=$VPC_ID" "Name=cidr-block,Values=10.0.2.0/24" \
-            --query "Subnets[0].SubnetId" --output text --region "$AWS_REGION")
+            --filters \
+              "Name=vpc-id,Values=$VPC_ID" \
+              "Name=cidr-block,Values=10.0.2.0/24" \
+            --query "Subnets[0].SubnetId" \
+            --output text \
+            --region "$AWS_REGION")
+
           if [ "$PRIVATE_SUBNET_ID" != "None" ] && [ -n "$PRIVATE_SUBNET_ID" ]; then
+
+            echo "Private subnet: $PRIVATE_SUBNET_ID"
+
             if ! terraform state show aws_subnet.private_subnet >/dev/null 2>&1; then
               terraform import aws_subnet.private_subnet "$PRIVATE_SUBNET_ID"
             else
               echo "private_subnet already in Terraform state"
             fi
+
           else
-            echo "No private subnet found for 10.0.2.0/24"
+            echo "No private subnet found"
           fi
 
-          # --- Internet gateway ---
+
+          # =====================================================
+          # INTERNET GATEWAY
+          # =====================================================
+
           IGW_ID=$(aws ec2 describe-internet-gateways \
             --filters "Name=attachment.vpc-id,Values=$VPC_ID" \
-            --query "InternetGateways[0].InternetGatewayId" --output text --region "$AWS_REGION")
+            --query "InternetGateways[0].InternetGatewayId" \
+            --output text \
+            --region "$AWS_REGION")
+
           if [ "$IGW_ID" != "None" ] && [ -n "$IGW_ID" ]; then
+
+            echo "Internet Gateway: $IGW_ID"
+
             if ! terraform state show aws_internet_gateway.igw >/dev/null 2>&1; then
               terraform import aws_internet_gateway.igw "$IGW_ID"
             else
               echo "igw already in Terraform state"
             fi
+
           else
-            echo "No internet gateway found for this VPC"
+            echo "No internet gateway found"
           fi
 
-          # --- Public route table + association ---
+
+          # =====================================================
+          # PUBLIC ROUTE TABLE
+          # =====================================================
+
           PUBLIC_RTB_ID=$(aws ec2 describe-route-tables \
-            --filters "Name=vpc-id,Values=$VPC_ID" "Name=tag:Name,Values=public" \
-            --query "RouteTables[0].RouteTableId" --output text --region "$AWS_REGION")
+            --filters \
+              "Name=vpc-id,Values=$VPC_ID" \
+              "Name=tag:Name,Values=public" \
+            --query "RouteTables[0].RouteTableId" \
+            --output text \
+            --region "$AWS_REGION")
+
           if [ "$PUBLIC_RTB_ID" != "None" ] && [ -n "$PUBLIC_RTB_ID" ]; then
+
+            echo "Public route table: $PUBLIC_RTB_ID"
+
             if ! terraform state show aws_route_table.public >/dev/null 2>&1; then
               terraform import aws_route_table.public "$PUBLIC_RTB_ID"
             else
               echo "public route table already in Terraform state"
             fi
 
-            if [ -n "$PUBLIC_SUBNET_ID" ] && [ "$PUBLIC_SUBNET_ID" != "None" ]; then
+          fi
+
+
+          # =====================================================
+          # PUBLIC ROUTE TABLE ASSOCIATION
+          # =====================================================
+
+          if [ "$PUBLIC_SUBNET_ID" != "None" ] && \
+             [ -n "$PUBLIC_SUBNET_ID" ] && \
+             [ "$PUBLIC_RTB_ID" != "None" ] && \
+             [ -n "$PUBLIC_RTB_ID" ]; then
+
+            PUBLIC_ASSOC_ID=$(aws ec2 describe-route-tables \
+              --region "$AWS_REGION" \
+              --query "RouteTables[].Associations[?SubnetId=='$PUBLIC_SUBNET_ID'].RouteTableAssociationId | [0]" \
+              --output text)
+
+            echo "Public association: $PUBLIC_ASSOC_ID"
+
+            if [ "$PUBLIC_ASSOC_ID" != "None" ] && \
+               [ -n "$PUBLIC_ASSOC_ID" ]; then
+
               if ! terraform state show aws_route_table_association.public >/dev/null 2>&1; then
-                terraform import aws_route_table_association.public "${PUBLIC_SUBNET_ID}/${PUBLIC_RTB_ID}"
+                terraform import \
+                  aws_route_table_association.public \
+                  "$PUBLIC_ASSOC_ID"
               else
                 echo "public route table association already in Terraform state"
               fi
+
+            else
+              echo "No public subnet association found"
             fi
-          else
-            echo "No public route table found"
+
           fi
 
-          # --- Private route table + association ---
+
+          # =====================================================
+          # PRIVATE ROUTE TABLE
+          # =====================================================
+
           PRIVATE_RTB_ID=$(aws ec2 describe-route-tables \
-            --filters "Name=vpc-id,Values=$VPC_ID" "Name=tag:Name,Values=private" \
-            --query "RouteTables[0].RouteTableId" --output text --region "$AWS_REGION")
+            --filters \
+              "Name=vpc-id,Values=$VPC_ID" \
+              "Name=tag:Name,Values=private" \
+            --query "RouteTables[0].RouteTableId" \
+            --output text \
+            --region "$AWS_REGION")
+
           if [ "$PRIVATE_RTB_ID" != "None" ] && [ -n "$PRIVATE_RTB_ID" ]; then
+
+            echo "Private route table: $PRIVATE_RTB_ID"
+
             if ! terraform state show aws_route_table.private >/dev/null 2>&1; then
               terraform import aws_route_table.private "$PRIVATE_RTB_ID"
             else
               echo "private route table already in Terraform state"
             fi
 
-            if [ -n "$PRIVATE_SUBNET_ID" ] && [ "$PRIVATE_SUBNET_ID" != "None" ]; then
-              if ! terraform state show aws_route_table_association.private >/dev/null 2>&1; then
-                # Attempt the import unconditionally; if it genuinely doesn't
-                # exist yet, ignore the failure and let apply create it.
-                terraform import aws_route_table_association.private "${PRIVATE_SUBNET_ID}/${PRIVATE_RTB_ID}" \
-                  || echo "No existing association to import -- Terraform will create it on apply"
-              else
-                echo "private route table association already in Terraform state"
-              fi
-            fi
-          else
-            echo "No private route table found"
           fi
 
-      # --------------------------------------------------
-      # Show Terraform state
-      # --------------------------------------------------
-      - name: Show Terraform state
+
+          # =====================================================
+          # PRIVATE ROUTE TABLE ASSOCIATION
+          #
+          # Find the association by PRIVATE SUBNET across ALL
+          # route tables.
+          # =====================================================
+
+          if [ "$PRIVATE_SUBNET_ID" != "None" ] && \
+             [ -n "$PRIVATE_SUBNET_ID" ]; then
+
+            echo "Searching for existing private subnet association..."
+
+            PRIVATE_ASSOC_ID=$(aws ec2 describe-route-tables \
+              --region "$AWS_REGION" \
+              --query "RouteTables[].Associations[?SubnetId=='$PRIVATE_SUBNET_ID'].RouteTableAssociationId | [0]" \
+              --output text)
+
+            CURRENT_PRIVATE_RTB_ID=$(aws ec2 describe-route-tables \
+              --region "$AWS_REGION" \
+              --query "RouteTables[?Associations[?SubnetId=='$PRIVATE_SUBNET_ID']].RouteTableId | [0]" \
+              --output text)
+
+            echo "Private subnet: $PRIVATE_SUBNET_ID"
+            echo "Current association: $PRIVATE_ASSOC_ID"
+            echo "Current route table: $CURRENT_PRIVATE_RTB_ID"
+            echo "Terraform private route table: $PRIVATE_RTB_ID"
+
+            if [ "$PRIVATE_ASSOC_ID" != "None" ] && \
+               [ -n "$PRIVATE_ASSOC_ID" ]; then
+
+              if ! terraform state show aws_route_table_association.private >/dev/null 2>&1; then
+
+                echo "Importing existing private subnet association..."
+
+                terraform import \
+                  aws_route_table_association.private \
+                  "$PRIVATE_ASSOC_ID"
+
+              else
+
+                echo "private route table association already in Terraform state"
+
+              fi
+
+            else
+
+              echo "No existing private subnet association found."
+
+            fi
+
+          fi
+
+      # ---------------------------------------------------------
+      # 15. Import existing EKS add-ons
+      # ---------------------------------------------------------
+      - name: Import existing EKS add-ons
+        shell: bash
         run: |
+
+          set -e
+
+          echo "Checking EKS add-ons..."
+
+          # =====================================================
+          # VPC CNI
+          # =====================================================
+
+          if aws eks describe-addon \
+            --cluster-name cluster \
+            --addon-name vpc-cni \
+            --region "$AWS_REGION" >/dev/null 2>&1; then
+
+            echo "vpc-cni exists"
+
+            if ! terraform state show aws_eks_addon.vpc_cni >/dev/null 2>&1; then
+
+              terraform import \
+                aws_eks_addon.vpc_cni \
+                "cluster:vpc-cni"
+
+            else
+
+              echo "vpc-cni already in Terraform state"
+
+            fi
+
+          else
+
+            echo "vpc-cni does not exist"
+
+          fi
+
+
+          # =====================================================
+          # KUBE PROXY
+          # =====================================================
+
+          if aws eks describe-addon \
+            --cluster-name cluster \
+            --addon-name kube-proxy \
+            --region "$AWS_REGION" >/dev/null 2>&1; then
+
+            echo "kube-proxy exists"
+
+            if ! terraform state show aws_eks_addon.kube_proxy >/dev/null 2>&1; then
+
+              terraform import \
+                aws_eks_addon.kube_proxy \
+                "cluster:kube-proxy"
+
+            else
+
+              echo "kube-proxy already in Terraform state"
+
+            fi
+
+          else
+
+            echo "kube-proxy does not exist"
+
+          fi
+
+
+          # =====================================================
+          # COREDNS
+          # =====================================================
+
+          if aws eks describe-addon \
+            --cluster-name cluster \
+            --addon-name coredns \
+            --region "$AWS_REGION" >/dev/null 2>&1; then
+
+            echo "coredns exists"
+
+            if ! terraform state show aws_eks_addon.coredns >/dev/null 2>&1; then
+
+              terraform import \
+                aws_eks_addon.coredns \
+                "cluster:coredns"
+
+            else
+
+              echo "coredns already in Terraform state"
+
+            fi
+
+          else
+
+            echo "coredns does not exist"
+
+          fi
+
+      # ---------------------------------------------------------
+      # 16. Show Terraform state
+      # ---------------------------------------------------------
+      - name: Terraform State
+        run: |
+          echo "========== TERRAFORM STATE =========="
           terraform state list
+          echo "====================================="
 
-      # --------------------------------------------------
-      # Terraform Plan
-      # --------------------------------------------------
+      # ---------------------------------------------------------
+      # 17. Terraform Plan
+      # ---------------------------------------------------------
       - name: Terraform Plan
-        run: |
-          terraform plan
+        run: terraform plan
 
-      # --------------------------------------------------
-      # Terraform Apply
-      # --------------------------------------------------
+      # ---------------------------------------------------------
+      # 18. Terraform Apply
+      # ---------------------------------------------------------
       - name: Terraform Apply
-        run: |
-          terraform apply -auto-approve
+        run: terraform apply -auto-approve
