@@ -1,0 +1,352 @@
+name: Cleanup AWS Infrastructure
+
+on:
+  workflow_dispatch:
+
+env:
+  AWS_REGION: us-east-1
+
+jobs:
+  cleanup:
+    name: Delete Existing AWS Resources
+    runs-on: ubuntu-latest
+
+    steps:
+
+      # ---------------------------------------------------------
+      # 1. Configure AWS credentials
+      # ---------------------------------------------------------
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+
+      # ---------------------------------------------------------
+      # 2. Verify AWS account
+      # ---------------------------------------------------------
+      - name: Verify AWS identity
+        run: |
+          aws sts get-caller-identity
+
+
+      # ---------------------------------------------------------
+      # 3. Delete EKS node group
+      # ---------------------------------------------------------
+      - name: Delete EKS node group
+        run: |
+          echo "Checking EKS node group..."
+
+          if aws eks describe-nodegroup \
+            --cluster-name cluster \
+            --nodegroup-name udacity \
+            --region "$AWS_REGION" >/dev/null 2>&1; then
+
+            echo "Deleting EKS node group..."
+
+            aws eks delete-nodegroup \
+              --cluster-name cluster \
+              --nodegroup-name udacity \
+              --region "$AWS_REGION"
+
+            echo "Waiting for node group deletion..."
+
+            aws eks wait nodegroup-deleted \
+              --cluster-name cluster \
+              --nodegroup-name udacity \
+              --region "$AWS_REGION"
+
+          else
+
+            echo "EKS node group does not exist."
+
+          fi
+
+
+      # ---------------------------------------------------------
+      # 4. Delete EKS cluster
+      # ---------------------------------------------------------
+      - name: Delete EKS cluster
+        run: |
+          echo "Checking EKS cluster..."
+
+          if aws eks describe-cluster \
+            --name cluster \
+            --region "$AWS_REGION" >/dev/null 2>&1; then
+
+            echo "Deleting EKS cluster..."
+
+            aws eks delete-cluster \
+              --name cluster \
+              --region "$AWS_REGION"
+
+            echo "Waiting for EKS cluster deletion..."
+
+            aws eks wait cluster-deleted \
+              --name cluster \
+              --region "$AWS_REGION"
+
+          else
+
+            echo "EKS cluster does not exist."
+
+          fi
+
+
+      # ---------------------------------------------------------
+      # 5. Delete ECR repositories
+      # ---------------------------------------------------------
+      - name: Delete ECR repositories
+        run: |
+
+          echo "Deleting frontend ECR..."
+
+          aws ecr delete-repository \
+            --repository-name frontend \
+            --force \
+            --region "$AWS_REGION" \
+            2>/dev/null || true
+
+
+          echo "Deleting backend ECR..."
+
+          aws ecr delete-repository \
+            --repository-name backend \
+            --force \
+            --region "$AWS_REGION" \
+            2>/dev/null || true
+
+
+      # ---------------------------------------------------------
+      # 6. Delete IAM roles
+      # ---------------------------------------------------------
+      - name: Delete EKS IAM roles
+        run: |
+
+          echo "Deleting EKS cluster role..."
+
+          ROLE_NAME="eks_cluster_role"
+
+          if aws iam get-role \
+            --role-name "$ROLE_NAME" >/dev/null 2>&1; then
+
+            echo "Detaching policies..."
+
+            aws iam detach-role-policy \
+              --role-name "$ROLE_NAME" \
+              --policy-arn arn:aws:iam::aws:policy/AmazonEKSClusterPolicy \
+              2>/dev/null || true
+
+            aws iam detach-role-policy \
+              --role-name "$ROLE_NAME" \
+              --policy-arn arn:aws:iam::aws:policy/AmazonEKSServicePolicy \
+              2>/dev/null || true
+
+            aws iam delete-role \
+              --role-name "$ROLE_NAME" \
+              2>/dev/null || true
+
+          fi
+
+
+          echo "Deleting node group role..."
+
+          ROLE_NAME="udacity-node-group"
+
+          if aws iam get-role \
+            --role-name "$ROLE_NAME" >/dev/null 2>&1; then
+
+            aws iam detach-role-policy \
+              --role-name "$ROLE_NAME" \
+              --policy-arn arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy \
+              2>/dev/null || true
+
+            aws iam detach-role-policy \
+              --role-name "$ROLE_NAME" \
+              --policy-arn arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly \
+              2>/dev/null || true
+
+            aws iam detach-role-policy \
+              --role-name "$ROLE_NAME" \
+              --policy-arn arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy \
+              2>/dev/null || true
+
+            aws iam delete-role \
+              --role-name "$ROLE_NAME" \
+              2>/dev/null || true
+
+          fi
+
+
+      # ---------------------------------------------------------
+      # 7. Find VPC
+      # ---------------------------------------------------------
+      - name: Find Udacity VPC
+        id: vpc
+        run: |
+
+          VPC_ID=$(aws ec2 describe-vpcs \
+            --filters "Name=tag:Name,Values=udacity" \
+            --query "Vpcs[0].VpcId" \
+            --output text \
+            --region "$AWS_REGION")
+
+          echo "VPC_ID=$VPC_ID"
+
+          echo "vpc_id=$VPC_ID" >> "$GITHUB_OUTPUT"
+
+
+      # ---------------------------------------------------------
+      # 8. Delete VPC networking resources
+      # ---------------------------------------------------------
+      - name: Delete VPC
+        run: |
+
+          VPC_ID="${{ steps.vpc.outputs.vpc_id }}"
+
+          if [ "$VPC_ID" == "None" ] || [ -z "$VPC_ID" ]; then
+            echo "No Udacity VPC found."
+            exit 0
+          fi
+
+          echo "Deleting VPC: $VPC_ID"
+
+
+          # -----------------------------------------------------
+          # Delete VPC endpoints
+          # -----------------------------------------------------
+
+          ENDPOINT_IDS=$(aws ec2 describe-vpc-endpoints \
+            --filters "Name=vpc-id,Values=$VPC_ID" \
+            --query "VpcEndpoints[].VpcEndpointId" \
+            --output text \
+            --region "$AWS_REGION")
+
+          if [ -n "$ENDPOINT_IDS" ] && [ "$ENDPOINT_IDS" != "None" ]; then
+
+            echo "Deleting VPC endpoints..."
+
+            aws ec2 delete-vpc-endpoints \
+              --vpc-endpoint-ids $ENDPOINT_IDS \
+              --region "$AWS_REGION"
+
+          fi
+
+
+          # -----------------------------------------------------
+          # Delete route table associations
+          # -----------------------------------------------------
+
+          ASSOCIATION_IDS=$(aws ec2 describe-route-tables \
+            --filters "Name=vpc-id,Values=$VPC_ID" \
+            --query "RouteTables[].Associations[?Main==\`false\`].RouteTableAssociationId" \
+            --output text \
+            --region "$AWS_REGION")
+
+          if [ -n "$ASSOCIATION_IDS" ] && [ "$ASSOCIATION_IDS" != "None" ]; then
+
+            for ASSOC_ID in $ASSOCIATION_IDS
+            do
+
+              echo "Disassociating $ASSOC_ID"
+
+              aws ec2 disassociate-route-table \
+                --association-id "$ASSOC_ID" \
+                --region "$AWS_REGION" \
+                2>/dev/null || true
+
+            done
+
+          fi
+
+
+          # -----------------------------------------------------
+          # Delete route tables
+          # -----------------------------------------------------
+
+          ROUTE_TABLE_IDS=$(aws ec2 describe-route-tables \
+            --filters "Name=vpc-id,Values=$VPC_ID" \
+            --query "RouteTables[].RouteTableId" \
+            --output text \
+            --region "$AWS_REGION")
+
+          for RTB_ID in $ROUTE_TABLE_IDS
+          do
+
+            echo "Deleting route table $RTB_ID"
+
+            aws ec2 delete-route-table \
+              --route-table-id "$RTB_ID" \
+              --region "$AWS_REGION" \
+              2>/dev/null || true
+
+          done
+
+
+          # -----------------------------------------------------
+          # Delete subnets
+          # -----------------------------------------------------
+
+          SUBNET_IDS=$(aws ec2 describe-subnets \
+            --filters "Name=vpc-id,Values=$VPC_ID" \
+            --query "Subnets[].SubnetId" \
+            --output text \
+            --region "$AWS_REGION")
+
+          for SUBNET_ID in $SUBNET_IDS
+          do
+
+            echo "Deleting subnet $SUBNET_ID"
+
+            aws ec2 delete-subnet \
+              --subnet-id "$SUBNET_ID" \
+              --region "$AWS_REGION"
+
+          done
+
+
+          # -----------------------------------------------------
+          # Delete internet gateway
+          # -----------------------------------------------------
+
+          IGW_IDS=$(aws ec2 describe-internet-gateways \
+            --filters "Name=attachment.vpc-id,Values=$VPC_ID" \
+            --query "InternetGateways[].InternetGatewayId" \
+            --output text \
+            --region "$AWS_REGION")
+
+          for IGW_ID in $IGW_IDS
+          do
+
+            echo "Detaching internet gateway $IGW_ID"
+
+            aws ec2 detach-internet-gateway \
+              --internet-gateway-id "$IGW_ID" \
+              --vpc-id "$VPC_ID" \
+              --region "$AWS_REGION" \
+              2>/dev/null || true
+
+            echo "Deleting internet gateway $IGW_ID"
+
+            aws ec2 delete-internet-gateway \
+              --internet-gateway-id "$IGW_ID" \
+              --region "$AWS_REGION" \
+              2>/dev/null || true
+
+          done
+
+
+          # -----------------------------------------------------
+          # Delete VPC
+          # -----------------------------------------------------
+
+          echo "Deleting VPC $VPC_ID"
+
+          aws ec2 delete-vpc \
+            --vpc-id "$VPC_ID" \
+            --region "$AWS_REGION"
+
+          echo "VPC deleted successfully."
