@@ -1,0 +1,62 @@
+name: Diagnose Node Health
+
+on:
+  workflow_dispatch:
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region: us-east-1
+
+      - name: Update kubeconfig
+        run: aws eks update-kubeconfig --name cluster --region us-east-1
+
+      - name: Node status
+        run: |
+          echo "=== kubectl get nodes ==="
+          kubectl get nodes -o wide
+          echo ""
+          echo "=== kubectl describe node (conditions + events) ==="
+          NODE_NAME=$(kubectl get nodes -o jsonpath='{.items[0].metadata.name}')
+          kubectl describe node "$NODE_NAME"
+
+      - name: kube-system pod status
+        run: |
+          echo "=== All kube-system pods ==="
+          kubectl get pods -n kube-system -o wide
+
+      - name: aws-node (VPC CNI) logs
+        run: |
+          AWS_NODE_POD=$(kubectl get pods -n kube-system -l k8s-app=aws-node -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
+          if [ -n "$AWS_NODE_POD" ]; then
+            echo "=== Logs: $AWS_NODE_POD ==="
+            kubectl logs -n kube-system "$AWS_NODE_POD" --all-containers --tail=100 || true
+            echo ""
+            echo "=== Describe: $AWS_NODE_POD ==="
+            kubectl describe pod -n kube-system "$AWS_NODE_POD"
+          else
+            echo "No aws-node pod found -- VPC CNI daemonset may not be scheduled at all"
+          fi
+
+      - name: kube-proxy logs
+        run: |
+          KUBE_PROXY_POD=$(kubectl get pods -n kube-system -l k8s-app=kube-proxy -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
+          if [ -n "$KUBE_PROXY_POD" ]; then
+            echo "=== Logs: $KUBE_PROXY_POD ==="
+            kubectl logs -n kube-system "$KUBE_PROXY_POD" --tail=50 || true
+          else
+            echo "No kube-proxy pod found"
+          fi
+
+      - name: Security group check
+        run: |
+          echo "=== Cluster security group ==="
+          aws eks describe-cluster --name cluster --region us-east-1 \
+            --query "cluster.resourcesVpcConfig.clusterSecurityGroupId" --output text
