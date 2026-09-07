@@ -74,13 +74,13 @@ jobs:
           echo "Checking EKS cluster..."
 
           if aws eks describe-cluster \
-            --name cluster \
+            --name cluster1 \
             --region "$AWS_REGION" >/dev/null 2>&1; then
 
             echo "Deleting EKS cluster..."
 
             aws eks delete-cluster \
-              --name cluster \
+              --name cluster1 \
               --region "$AWS_REGION"
 
             echo "Waiting for EKS cluster deletion..."
