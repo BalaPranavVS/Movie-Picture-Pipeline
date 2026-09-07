@@ -93,31 +93,18 @@ jobs:
         id: ecr-login
         uses: aws-actions/amazon-ecr-login@v2
 
+      # CHANGED:
+      # Backend URL now comes from GitHub Repository Variable
       - name: Get backend LoadBalancer URL
         id: backend-url
         run: |
-          echo "Waiting for backend LoadBalancer..."
-
-          for i in {1..30}; do
-            BACKEND_URL=$(kubectl get svc backend \
-              --namespace default \
-              -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || true)
-
-            if [ -n "$BACKEND_URL" ]; then
-              echo "Backend LoadBalancer: $BACKEND_URL"
-              echo "url=http://$BACKEND_URL" >> "$GITHUB_OUTPUT"
-              break
-            fi
-
-            echo "Backend LoadBalancer not ready. Waiting..."
-            sleep 10
-          done
-
-          if [ -z "$BACKEND_URL" ]; then
-            echo "ERROR: Backend LoadBalancer was not found."
-            kubectl get svc -A
+          if [ -z "${{ vars.BACKEND_API_URL }}" ]; then
+            echo "ERROR: BACKEND_API_URL GitHub repository variable is not set."
             exit 1
           fi
+
+          echo "Backend API URL is configured."
+          echo "url=${{ vars.BACKEND_API_URL }}" >> "$GITHUB_OUTPUT"
 
       - name: Build Docker image
         working-directory: starter/frontend
