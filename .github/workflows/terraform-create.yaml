@@ -318,15 +318,10 @@ jobs:
 
             if [ -n "$PRIVATE_SUBNET_ID" ] && [ "$PRIVATE_SUBNET_ID" != "None" ]; then
               if ! terraform state show aws_route_table_association.private >/dev/null 2>&1; then
-                ASSOC_EXISTS=$(aws ec2 describe-route-tables \
-                  --route-table-ids "$PRIVATE_RTB_ID" \
-                  --query "RouteTables[0].Associations[?SubnetId=='${PRIVATE_SUBNET_ID}'] | length(@)" \
-                  --output text --region "$AWS_REGION")
-                if [ "$ASSOC_EXISTS" != "0" ] && [ -n "$ASSOC_EXISTS" ]; then
-                  terraform import aws_route_table_association.private "${PRIVATE_SUBNET_ID}/${PRIVATE_RTB_ID}"
-                else
-                  echo "No existing association between $PRIVATE_SUBNET_ID and $PRIVATE_RTB_ID -- Terraform will create it on apply"
-                fi
+                # Attempt the import unconditionally; if it genuinely doesn't
+                # exist yet, ignore the failure and let apply create it.
+                terraform import aws_route_table_association.private "${PRIVATE_SUBNET_ID}/${PRIVATE_RTB_ID}" \
+                  || echo "No existing association to import -- Terraform will create it on apply"
               else
                 echo "private route table association already in Terraform state"
               fi
